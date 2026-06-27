@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import os
+from io import BytesIO
 
 # ============ KONFIGURASI ============
 st.set_page_config(page_title="Catatan Pelanggaran Santri", layout="wide", initial_sidebar_state="collapsed")
@@ -57,13 +58,82 @@ def hapus_data(index_list):
     df.to_csv(FILE_DATA, index=False)
     return df
 
+# ============ FUNGSI EXPORT ============
+def export_excel(df):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, sheet_name="Data Pelanggaran", index=False)
+        workbook = writer.book
+        worksheet = writer.sheets["Data Pelanggaran"]
+        
+        from openpyxl.styles import numbers
+        for row in range(2, len(df) + 2):
+            cell = worksheet.cell(row=row, column=5)
+            cell.number_format = '#,##0'
+        
+        for column in worksheet.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            worksheet.column_dimensions[column_letter].width = adjusted_width
+    
+    output.seek(0)
+    return output
+
+def export_word(df):
+    output = BytesIO()
+    from docx import Document
+    from docx.shared import Inches, Pt
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    
+    doc = Document()
+    
+    title = doc.add_heading('📋 Laporan Data Pelanggaran Santri', 0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    doc.add_paragraph(f'Tanggal Export: {datetime.now().strftime("%d %B %Y %H:%M")}')
+    doc.add_paragraph('')
+    
+    doc.add_heading('📊 Ringkasan', level=1)
+    doc.add_paragraph(f'Total Pelanggaran: {len(df)}')
+    doc.add_paragraph(f'Total Denda: Rp {df["Denda (Rp)"].sum():,}')
+    doc.add_paragraph('')
+    
+    doc.add_heading('📋 Data Pelanggaran', level=1)
+    
+    table = doc.add_table(rows=1, cols=6)
+    table.style = 'Table Grid'
+    
+    hdr_cells = table.rows[0].cells
+    headers = ['Tanggal', 'Nama Santri', 'Pelanggaran', 'Denda (Rp)', 'Status', 'Keterangan']
+    for i, header in enumerate(headers):
+        hdr_cells[i].text = header
+        hdr_cells[i].paragraphs[0].runs[0].bold = True
+    
+    for _, row in df.iterrows():
+        row_cells = table.add_row().cells
+        row_cells[0].text = row['Tanggal'].strftime('%d/%m/%Y %H:%M') if isinstance(row['Tanggal'], pd.Timestamp) else str(row['Tanggal'])
+        row_cells[1].text = str(row['Nama Santri'])
+        row_cells[2].text = str(row['Pelanggaran'])
+        row_cells[3].text = f"Rp {row['Denda (Rp)']:,}"
+        row_cells[4].text = str(row['Status'])
+        row_cells[5].text = str(row['Keterangan']) if pd.notna(row['Keterangan']) else ""
+    
+    doc.save(output)
+    output.seek(0)
+    return output
+
 # ============ HALAMAN LOGIN ============
 def halaman_login():
     st.markdown("""
         <style>
-            .stApp {
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            }
+            .stApp { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
             .login-container {
                 max-width: 440px;
                 margin: auto;
@@ -103,12 +173,8 @@ def halaman_login():
                 flex: 1;
                 border-bottom: 1px solid #ddd;
             }
-            .divider::before {
-                margin-right: 15px;
-            }
-            .divider::after {
-                margin-left: 15px;
-            }
+            .divider::before { margin-right: 15px; }
+            .divider::after { margin-left: 15px; }
             .stTextInput > div > div > input {
                 border-radius: 10px !important;
                 border: 2px solid #e0e0e0 !important;
@@ -205,16 +271,8 @@ def halaman_utama():
                 margin-bottom: 20px;
                 box-shadow: 0 4px 15px rgba(26,115,232,0.3);
             }
-            .header h1 {
-                color: white;
-                margin: 0;
-                font-size: 24px;
-            }
-            .header p {
-                color: #e3f2fd;
-                margin: 0;
-                font-size: 14px;
-            }
+            .header h1 { color: white; margin: 0; font-size: 24px; }
+            .header p { color: #e3f2fd; margin: 0; font-size: 14px; }
             .card {
                 background: white;
                 padding: 20px;
@@ -423,17 +481,34 @@ def halaman_utama():
                             st.rerun()
                     
                     with col_btn2:
-                        if st.button("📥 Download CSV", use_container_width=True):
-                            df.to_csv("export_data_pelanggaran.csv", index=False)
-                            st.success("✅ Data berhasil diexport!")
+                        # ===== DOWNLOAD EXCEL =====
+                        if st.button("📥 Download Excel", use_container_width=True):
+                            excel_data = export_excel(df)
+                            st.download_button(
+                                label="💾 Klik untuk Download Excel",
+                                data=excel_data,
+                                file_name=f"Data_Pelanggaran_{datetime.now().strftime('%d%m%Y')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key="download_excel"
+                            )
+                            st.success("✅ File Excel siap didownload!")
                     
                     with col_btn3:
-                        if st.button("🗑️ Hapus Massal", use_container_width=True):
-                            st.session_state.show_delete = True
-                            st.rerun()
+                        # ===== DOWNLOAD WORD =====
+                        if st.button("📄 Download Word", use_container_width=True):
+                            word_data = export_word(df)
+                            st.download_button(
+                                label="💾 Klik untuk Download Word",
+                                data=word_data,
+                                file_name=f"Data_Pelanggaran_{datetime.now().strftime('%d%m%Y')}.docx",
+                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                key="download_word"
+                            )
+                            st.success("✅ File Word siap didownload!")
                     
                     with col_btn4:
-                        if st.button("🔄 Refresh", use_container_width=True):
+                        if st.button("🗑️ Hapus Massal", use_container_width=True):
+                            st.session_state.show_delete = True
                             st.rerun()
                     
                     # ============ HAPUS PER BARIS (EXPANDABLE) ============
